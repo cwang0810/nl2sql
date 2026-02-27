@@ -1,0 +1,85 @@
+# BIRD-SQL NL2SQL Pipeline Configuration
+
+# === 阿里百炼 DashScope API ===
+# 两个模型均通过 DashScope 调用，共享同一个 API Key
+dashscope:
+  api_base: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "${DASHSCOPE_API_KEY}"
+
+# === LLM Models ===
+models:
+  deepseek:
+    model_name: "deepseek-v3.2"          # DashScope 上的 DeepSeek V3
+    max_tokens: 2048
+    timeout: 120
+    max_retries: 3
+
+  qwen3:
+    model_name: "qwen3-coder-480b-a35b-instruct"  # DashScope 上的 Qwen3 Coder
+    max_tokens: 2048
+    timeout: 120
+    max_retries: 3
+
+# === Embedding (通过 DashScope API，无需本地模型) ===
+embedding:
+  model_name: "text-embedding-v3"     # DashScope 嵌入模型
+  batch_size: 6                       # DashScope 每批最多 6 条
+
+# === Stage 1: Task Understanding ===
+stage1:
+  schema_linking:
+    embedding_top_k: 30                # initial embedding retrieval count
+    llm_model: "deepseek"              # model for LLM-based refinement
+  value_retrieval:
+    top_k: 5                           # number of matching values per entity
+    max_values_per_column: 1000        # max values to index per column
+  example_retrieval:
+    top_k: 3                           # number of few-shot examples
+
+# === Stage 2: SQL Generation ===
+stage2:
+  generators:
+    - name: "icl_deepseek"
+      model: "deepseek"
+      temperatures: [0.0, 0.5, 1.0, 1.5]
+      prompts: ["icl_direct", "icl_cot"]
+      candidates_per_config: 1
+
+    - name: "cot_qwen3"
+      model: "qwen3"
+      temperatures: [0.0, 0.5, 1.0, 1.5]
+      prompts: ["cot_execution_plan", "divide_conquer"]
+      candidates_per_config: 1
+
+  sql_fixer:
+    max_retries: 3
+    model: "deepseek"
+
+  sql_revisor:
+    max_retries: 2
+    model: "qwen3"
+
+# === Stage 3: SQL Selection ===
+stage3:
+  tournament:
+    model: "qwen3"                     # model for pairwise comparison
+    temperature: 0.0
+  fallback: "self_consistency"         # fallback when tournament is tied
+
+# === Execution ===
+execution:
+  timeout_seconds: 30                  # SQL execution timeout
+  max_workers: 8                       # parallel execution workers
+
+# === Data Paths ===
+data:
+  bird_train: "data/bird_train"
+  bird_dev: "data/bird_dev"
+  mini_dev: "data/mini_dev"
+  indices: "data/indices"
+  results: "data/results"
+
+# === API Concurrency ===
+concurrency:
+  max_concurrent_requests: 20          # max parallel API calls
+  rate_limit_rpm: 200                  # requests per minute limit

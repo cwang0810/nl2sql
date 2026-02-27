@@ -1,0 +1,18 @@
+# LLM API clients
+openai>=1.30.0          # DashScope OpenAI-compatible API
+httpx>=0.27.0           # async HTTP client
+
+# Vector Store
+faiss-cpu>=1.8.0
+
+# Database
+sqlparse>=0.5.0
+
+# Utilities
+pyyaml>=6.0
+tqdm>=4.66.0
+rich>=13.0.0            # rich logging
+func-timeout>=4.3.5     # SQL execution timeout
+
+# Evaluation
+numpy>=1.26.0

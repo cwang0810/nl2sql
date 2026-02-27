@@ -1,0 +1,36 @@
+# Database-Specific Domain Knowledge (Tier 3)
+# These hints are injected into schema output for specific databases.
+# Applicable to ANY benchmark that uses these databases.
+#
+# To add a new database: just add a new key under 'databases:' with its hints.
+# No code changes needed.
+
+databases:
+  thrombosis_prediction:
+    - >-
+      CRITICAL: Laboratory categorical fields (RNP, SM, SC170, SSA, SSB, CENTROMEA, DNA, DNA-II)
+      store values as 'negative' (meaning '-' or normal) and '0' (meaning '+-').
+      When evidence says IN ('-', '+-'), translate to IN ('negative', '0').
+    - >-
+      'Anti-Cardiolipin antibody concentration' includes ALL THREE columns:
+      `aCL IgA`, `aCL IgG`, `aCL IgM`. SELECT all three when asked about anti-Cardiolipin status.
+    - >-
+      Do NOT use COUNT(DISTINCT) unless the question explicitly says 'unique' or 'distinct'.
+      When joining Patient + Laboratory, COUNT(ID) counts all matching lab records (with duplicates).
+
+  debit_card_specializing:
+    - >-
+      yearmonth.Date is in YYYYMM format (e.g., '201309').
+      transactions_1k.Date is in YYYY-MM-DD format (e.g., '2012-08-24').
+      When filtering by year-month period, JOIN through the yearmonth table, NOT by parsing transactions_1k.Date.
+    - >-
+      'Amount spent at gas stations' = transactions_1k.Price (money).
+      'Consumption' = yearmonth.Consumption (gas usage). These are DIFFERENT concepts.
+    - >-
+      'Top spending customer' is ranked by yearmonth.Consumption, not transactions_1k.Price.
+    - >-
+      When counting customers by attribute (Currency, Segment, etc.), query the customers table DIRECTLY.
+      Do NOT join with transaction tables — transactions_1k has limited data.
+    - >-
+      'Monthly consumption' for a year means SUM(Consumption) per month (GROUP BY month),
+      NOT the max single customer record.

@@ -1,0 +1,128 @@
+# SQL Generation Rules (Single Source of Truth)
+# Three-tier architecture:
+#   1. universal  — applies to ANY NL2SQL task (Spider, BIRD, WikiSQL, custom)
+#   2. benchmark  — specific to a benchmark's conventions (e.g., BIRD evidence, EX evaluation)
+#   3. database   — specific to a single database schema (moved to domain_hints.yaml)
+#
+# Usage: The prompt loader assembles: universal + benchmark[active] rules.
+# Database-specific hints are injected via schema_formatter from domain_hints.yaml.
+
+# ─── Active benchmark (switch this when targeting a different benchmark) ───
+active_benchmark: bird
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 1: Universal Rules — any NL2SQL scenario
+# ═══════════════════════════════════════════════════════════════════════════════
+universal:
+  - id: 1
+    content: >-
+      Return ONLY the columns the question asks for. Do NOT add extra columns such as counts, totals, or IDs
+      unless explicitly requested. If the question asks "what month", return ONLY the month.
+  - id: 2
+    content: Do NOT use ROUND() unless the question explicitly asks for rounding.
+  - id: 3
+    content: Use CAST(... AS REAL) or (... * 1.0) for division to avoid integer division.
+  - id: 4
+    content: When the question asks "who" or "which", return only the identifier (name/ID), not additional metrics.
+  - id: 5
+    content: >-
+      **Do NOT concatenate first and last names** using || operator. If the database has separate columns like
+      first_name/last_name, return them as SEPARATE columns.
+  - id: 6
+    content: >-
+      When computing averages, pay careful attention to whether it's an average per row, per group, or an
+      overall average.
+  - id: 7
+    content: If the question says "ratio of A against B", compute A / B as a single number.
+  - id: 8
+    content: >-
+      When the question asks "how many" with a condition, use COUNT() or SUM() to return a SINGLE number —
+      do NOT return individual rows.
+  - id: 9
+    content: >-
+      When computing a percentage, the result should typically be between 0 and 100 (multiply by 100 if needed).
+  - id: 10
+    content: >-
+      For time-based comparisons like "best lap time", compare times as strings only if in consistent format.
+      MIN()/MAX() ignores NULLs automatically.
+  - id: 11
+    content: >-
+      **Do NOT add DISTINCT to COUNT unless explicitly required**. Only use COUNT(DISTINCT col) when the
+      question says "distinct", "unique", or "different". COUNT() after JOIN counts all matching rows
+      including duplicates — do NOT assume DISTINCT is needed.
+  - id: 12
+    content: >-
+      **ORDER of SELECT columns**: Follow the order columns are mentioned in the question text.
+  - id: 13
+    content: >-
+      **When the question asks "which X has the most/highest Y" and ties are possible**, use a subquery
+      WHERE Y = (SELECT MAX(Y) ...) instead of ORDER BY Y DESC LIMIT 1.
+  - id: 14
+    content: >-
+      **Return ONLY the directly answering column(s)**. For yes/no questions, return only the flag column.
+      Do NOT add context columns like IDs, dates, or labels unless explicitly asked.
+  - id: 15
+    content: >-
+      **Percentage denominator scope**: When computing "what percentage on date X have property Y",
+      the denominator is the count ON THAT DATE, not the total in the entire database.
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TIER 2: Benchmark-specific Rules
+# ═══════════════════════════════════════════════════════════════════════════════
+benchmarks:
+  bird:
+    dialect: sqlite
+    dialect_rules:
+      - id: B1
+        content: Always use SQLite-compatible syntax (SUBSTR not SUBSTRING, || for concat, no ISNULL, COALESCE instead).
+      - id: B2
+        content: >-
+          When computing age from Birthday, use: (strftime('%Y', 'now') - strftime('%Y', Birthday))
+          to get a POSITIVE number.
+    evidence_rules:
+      - id: B3
+        content: >-
+          **EVIDENCE IS THE HIGHEST PRIORITY**: When external knowledge / evidence provides a specific formula,
+          calculation method, or column mapping, you MUST follow it EXACTLY. Do NOT override evidence with your
+          own interpretation. If the evidence says "X = A / B", compute EXACTLY A / B in your SQL.
+      - id: B4
+        content: >-
+          When the evidence says "approved = True", output the string 'true' (not 'yes', not 1). Match the
+          exact format specified in the evidence.
+      - id: B5
+        content: >-
+          If the evidence specifies a subtraction order like "difference = A - B", compute EXACTLY A - B,
+          not B - A.
+    evaluation_rules:
+      - id: B6
+        content: >-
+          If the question asks "Is it true...? If so, how many more?", return ONLY the numeric answer,
+          not 'true'/'false'.
+      - id: B7
+        content: >-
+          **Do NOT CAST date substring components to INTEGER**. When extracting month or day via SUBSTR(),
+          preserve the original string format. SUBSTR('201304', 5, 2) = '04' — do NOT cast to 4.
+      - id: B8
+        content: >-
+          **CHECK TABLE DATA RANGES**: Before using a table, check its row count and date ranges shown in the
+          schema. If a table only has limited date coverage, do NOT use it to query dates outside that range.
+
+  spider:
+    dialect: sqlite
+    dialect_rules:
+      - id: S1
+        content: Always use SQLite-compatible syntax (SUBSTR not SUBSTRING, || for concat, no ISNULL).
+    evidence_rules: []
+    evaluation_rules:
+      - id: S2
+        content: >-
+          Spider evaluates both Execution Match (EM) and Exact Set Match (EX). SQL structure matters —
+          prefer canonical SQL patterns (e.g., use JOIN ... ON over WHERE-based joins).
+
+  wikisql:
+    dialect: sqlite
+    dialect_rules:
+      - id: W1
+        content: WikiSQL queries are single-table only. Do NOT use JOINs.
+    evidence_rules: []
+    evaluation_rules: []
