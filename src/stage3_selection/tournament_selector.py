@@ -1,6 +1,6 @@
 """
-Tournament Selection: pairwise LLM comparison to select the best SQL.
-Inspired by Agentar-Scale-SQL.
+Tournament Selection: position-debiased pairwise LLM comparison to select the best SQL.
+Inspired by Agentar-Scale-SQL with position bias mitigation.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from ..utils.db_executor import ExecutionResult
 
 logger = logging.getLogger(__name__)
 
-PAIRWISE_PROMPT = """You are an expert SQL judge. Given a natural language question and database schema, compare two SQL queries and determine which is more likely correct.
+PAIRWISE_PROMPT = """You are an expert SQL judge for SQLite databases. Given a natural language question, database schema, and external knowledge, compare two SQL queries and determine which is more likely to produce the CORRECT answer.
 
 【Question】
 {question}
@@ -23,35 +23,45 @@ PAIRWISE_PROMPT = """You are an expert SQL judge. Given a natural language quest
 【Database Schema】
 {schema}
 
-【External Knowledge】
+【External Knowledge / Evidence】
 {evidence}
 
-【SQL A】
+【SQL Candidate 1】
+```sql
 {sql_a}
+```
 Execution result (first 5 rows): {result_a}
+Row count: {count_a}
 
-【SQL B】
+【SQL Candidate 2】
+```sql
 {sql_b}
+```
 Execution result (first 5 rows): {result_b}
+Row count: {count_b}
 
-Analyze both SQL queries:
-1. Does each correctly interpret the question's intent?
-2. Are JOIN conditions correct?
-3. Are WHERE conditions accurate?
-4. Are aggregation functions appropriate?
-5. Which result looks more reasonable?
+CRITICAL analysis checklist:
+1. **Evidence compliance**: If evidence provides a formula or mapping, which SQL follows it EXACTLY?
+2. **Column selection**: Which SQL returns ONLY the columns the question asks for? (Extra columns = wrong)
+3. **Column order**: Do the SELECT columns follow the order mentioned in the question?
+4. **JOIN correctness**: Are the JOIN conditions and table relationships correct?
+5. **WHERE accuracy**: Do the filter conditions match the question's requirements?
+6. **Aggregation scope**: Is COUNT/SUM/AVG applied at the correct level (per-row vs per-group vs overall)?
+7. **Result reasonableness**: Which result makes more sense given the question? Empty results or NULL-heavy results are suspicious.
+8. **SQLite syntax**: Is the SQL valid SQLite? (SUBSTR not SUBSTRING, || for concat, no ISNULL)
 
-You MUST choose one. Output ONLY "A" or "B":"""
+Based on this analysis, which SQL is more likely correct?
+You MUST choose one. Output ONLY "1" or "2" (the candidate number):"""
 
 
 class TournamentSelector:
-    """Tournament-style pairwise comparison for SQL selection."""
+    """Position-debiased tournament-style pairwise comparison for SQL selection."""
 
     def __init__(self, llm_client: LLMClient, temperature: float = 0.0):
         self.llm = llm_client
         self.temperature = temperature
 
-    async def _pairwise_compare(
+    async def _pairwise_compare_single(
         self,
         question: str,
         schema: str,
@@ -61,15 +71,17 @@ class TournamentSelector:
         candidate_b: SQLCandidate,
         result_b: ExecutionResult,
     ) -> str:
-        """Compare two candidates, return "A" or "B"."""
+        """Single directional comparison, return "1" or "2"."""
         prompt = PAIRWISE_PROMPT.format(
             question=question,
             schema=schema,
             evidence=evidence or "No additional knowledge.",
             sql_a=candidate_a.sql,
             result_a=str(result_a.rows[:5]) if result_a.success else f"Error: {result_a.error}",
+            count_a=len(result_a.rows) if result_a.success else "N/A",
             sql_b=candidate_b.sql,
             result_b=str(result_b.rows[:5]) if result_b.success else f"Error: {result_b.error}",
+            count_b=len(result_b.rows) if result_b.success else "N/A",
         )
 
         try:
@@ -77,18 +89,65 @@ class TournamentSelector:
                 prompt=prompt,
                 temperature=self.temperature,
             )
-            answer = responses[0].content.strip().upper()
+            answer = responses[0].content.strip()
 
-            if "A" in answer and "B" not in answer:
-                return "A"
-            elif "B" in answer and "A" not in answer:
-                return "B"
+            if "1" in answer and "2" not in answer:
+                return "1"
+            elif "2" in answer and "1" not in answer:
+                return "2"
             else:
-                # Ambiguous answer, prefer A (first candidate)
-                return "A" if answer.startswith("A") else "B"
+                # Ambiguous — check first non-whitespace char
+                for ch in answer:
+                    if ch == "1":
+                        return "1"
+                    if ch == "2":
+                        return "2"
+                return "1"  # Default fallback
         except Exception as e:
             logger.warning(f"Pairwise comparison failed: {e}")
-            return "A"  # Default to first candidate on failure
+            return "1"
+
+    async def _pairwise_compare_debiased(
+        self,
+        question: str,
+        schema: str,
+        evidence: str,
+        candidate_a: SQLCandidate,
+        result_a: ExecutionResult,
+        candidate_b: SQLCandidate,
+        result_b: ExecutionResult,
+    ) -> str:
+        """Position-debiased comparison: run both orderings and require consistency.
+
+        Returns "A" if candidate_a wins, "B" if candidate_b wins,
+        or "TIE" if results are inconsistent (position bias detected).
+        """
+        # Forward: A=1, B=2
+        forward_task = self._pairwise_compare_single(
+            question, schema, evidence,
+            candidate_a, result_a,
+            candidate_b, result_b,
+        )
+        # Reverse: B=1, A=2
+        reverse_task = self._pairwise_compare_single(
+            question, schema, evidence,
+            candidate_b, result_b,
+            candidate_a, result_a,
+        )
+
+        forward_result, reverse_result = await asyncio.gather(forward_task, reverse_task)
+
+        # Forward: "1" means A wins, "2" means B wins
+        # Reverse: "1" means B wins, "2" means A wins
+        a_wins_forward = (forward_result == "1")
+        a_wins_reverse = (reverse_result == "2")
+
+        if a_wins_forward and a_wins_reverse:
+            return "A"  # Consistent: A wins both ways
+        elif not a_wins_forward and not a_wins_reverse:
+            return "B"  # Consistent: B wins both ways
+        else:
+            return "TIE"  # Inconsistent: position bias detected
 
     async def select(
         self,
@@ -97,10 +156,11 @@ class TournamentSelector:
         schema: str,
         evidence: str = "",
     ) -> SQLCandidate:
-        """Select the best SQL using tournament-style pairwise comparison.
+        """Select the best SQL using position-debiased tournament.
 
         Args:
-            candidates: List of (candidate, execution_result) tuples.
+            candidates: List of (candidate, execution_result) tuples,
+                        ordered by group size (most common first).
             question: Original natural language question.
             schema: Database schema string.
             evidence: External knowledge.
@@ -114,15 +174,17 @@ class TournamentSelector:
         if len(candidates) == 1:
             return candidates[0][0]
 
-        # Round-robin tournament
-        wins = {i: 0 for i in range(len(candidates))}
+        # Round-robin tournament with position debiasing
+        n = len(candidates)
+        wins = {i: 0 for i in range(n)}
+        ties = {i: 0 for i in range(n)}
 
         # Create all pairwise comparison tasks
         comparison_tasks = []
         pairs = []
-        for i in range(len(candidates)):
-            for j in range(i + 1, len(candidates)):
-                task = self._pairwise_compare(
+        for i in range(n):
+            for j in range(i + 1, n):
+                task = self._pairwise_compare_debiased(
                     question=question,
                     schema=schema,
                     evidence=evidence,
@@ -140,16 +202,23 @@ class TournamentSelector:
         for (i, j), winner in zip(pairs, results):
             if winner == "A":
                 wins[i] += 1
-            else:
+            elif winner == "B":
                 wins[j] += 1
+            else:
+                # TIE: give half credit to the candidate from a larger group
+                # (deduplicator orders by group_size descending)
+                ties[i] += 1
+                ties[j] += 1
 
-        # Select the candidate with most wins
-        best_idx = max(wins, key=wins.get)
-        winner = candidates[best_idx][0]
+        # Score = consistent wins + 0.25 * ties (slight credit for ties)
+        # Tiebreaker: prefer candidates from larger groups (lower index = larger group)
+        scores = {i: wins[i] + 0.25 * ties[i] for i in range(n)}
+        best_idx = max(range(n), key=lambda i: (scores[i], -i))
+        winner_candidate = candidates[best_idx][0]
 
         logger.info(
-            f"Tournament selection: {len(candidates)} candidates, "
-            f"winner has {wins[best_idx]} wins, "
-            f"generator={winner.generator}, strategy={winner.prompt_strategy}"
+            f"Tournament (debiased): {n} candidates, "
+            f"winner idx={best_idx} with {wins[best_idx]} wins + {ties[best_idx]} ties, "
+            f"generator={winner_candidate.generator}, strategy={winner_candidate.prompt_strategy}"
         )
-        return winner
+        return winner_candidate

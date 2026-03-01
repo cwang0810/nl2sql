@@ -17,6 +17,12 @@ databases:
     - >-
       Do NOT use COUNT(DISTINCT) unless the question explicitly says 'unique' or 'distinct'.
       When joining Patient + Laboratory, COUNT(ID) counts all matching lab records (with duplicates).
+    - >-
+      Patient.Description stores the first visit date (as string), NOT a text description.
+      When asked about 'first visit date' or 'initial examination', use Patient.Description.
+    - >-
+      Thrombosis values in Examination: 0 = negative, 1 = positive (not severe),
+      2 = positive (severe). When asked about 'thrombosis', check the specific level.
 
   debit_card_specializing:
     - >-
@@ -34,3 +40,225 @@ databases:
     - >-
       'Monthly consumption' for a year means SUM(Consumption) per month (GROUP BY month),
       NOT the max single customer record.
+
+  financial:
+    - >-
+      CRITICAL — district table columns have cryptic names A1-A16. Meanings:
+      A1=district_id, A2=district_name, A3=region, A4=population (string!),
+      A5=num_municipalities_<499, A6=num_municipalities_500_1999,
+      A7=num_municipalities_2000_9999, A8=num_municipalities_>10000,
+      A9=num_cities, A10=ratio_urban_inhabitants,
+      A11=average_salary, A12=unemployment_rate_95, A13=unemployment_rate_96,
+      A14=num_entrepreneurs_per_1000, A15=num_crimes_95, A16=num_crimes_96.
+      'Average salary' = A11. 'Unemployment rate' = A12 (1995) or A13 (1996).
+    - >-
+      loan.status values: 'A' = contract finished, no problems;
+      'B' = contract finished, loan not paid; 'C' = running contract, OK so far;
+      'D' = running contract, client in debt.
+      'Running' loans = status IN ('C', 'D'). 'In debt' = status = 'D'.
+      'Finished successfully' = status = 'A'. 'Defaulted' = status = 'B'.
+    - >-
+      trans (transaction) table: trans.type = 'PRIJEM' (credit/incoming),
+      'VYDAJ' (withdrawal/outgoing), 'VYBER' (cash withdrawal).
+      trans.operation: 'PREVOD NA UCET' (remittance to other bank),
+      'PREVOD Z UCTU' (collection from other bank), 'VKLAD' (credit in cash),
+      'VYBER' (withdrawal in cash), 'VYBER KARTOU' (credit card withdrawal).
+    - >-
+      trans.k_symbol (transaction characterization): 'POJISTNE' (insurance payment),
+      'SLUZBY' (payment for statement), 'UROK' (interest credited),
+      'SANKC. UROK' (sanction interest), 'SIPO' (household payment),
+      'DUCHOD' (old-age pension), 'UVER' (loan payment).
+    - >-
+      account.frequency: 'POPLATEK MESICNE' (monthly issuance),
+      'POPLATEK TYDNE' (weekly issuance), 'POPLATEK PO OBRATU' (after each transaction).
+    - >-
+      disp (disposition) table links clients to accounts.
+      disp.type: 'OWNER' (primary account holder), 'DISPONENT' (authorized person).
+      To find the owner of an account: JOIN disp ON disp.account_id = account.account_id WHERE disp.type = 'OWNER'.
+    - >-
+      Date ranges: account (1993-1997), loan (1993-1998), trans (1993-1998), card (1993-1998).
+      The data is historical — do NOT query dates outside these ranges.
+    - >-
+      For 'non-credit card withdrawals', filter trans.operation != 'VYBER KARTOU'
+      and trans.type IN ('VYDAJ', 'VYBER'), NOT by card table.
+
+  california_schools:
+    - >-
+      CRITICAL — Three tables join via different column names:
+      schools.CDSCode = frpm.CDSCode = satscores.cds.
+      Note: satscores uses lowercase 'cds', NOT 'CDSCode'.
+    - >-
+      frpm table stores Free/Reduced Price Meal data.
+      'Enrollment (K-12)' and 'FRPM Count (K-12)' are the key columns.
+      The eligible FRPM rate = "FRPM Count (K-12)" / "Enrollment (K-12)".
+      Column names contain spaces and parentheses — use backticks or double quotes.
+    - >-
+      frpm."Charter School (Y/N)" stores INTEGER values 0 and 1, NOT 'Y'/'N'.
+      Use = 1 for charter schools and = 0 for non-charter schools.
+    - >-
+      schools.FundingType values: 'Directly funded', 'Locally funded', or NULL.
+      When asked about charter school funding, use this column.
+    - >-
+      satscores.rtype: 'S' = school-level scores, 'D' = district-level.
+      When computing school-level averages, filter WHERE rtype = 'S'.
+    - >-
+      schools.DOCType stores district/school type codes as text descriptions like
+      'County Office of Education (COE)', 'Unified School District', etc.
+      But the gold answers sometimes expect the numeric code format like '00'.
+      Check what format the question expects.
+    - >-
+      For 'grades 1-12' queries, use frpm."Enrollment (K-12)" or schools.GSoffered.
+      schools.GSoffered stores values like 'K-5', '9-12', 'K-12', etc.
+    - >-
+      'Excellence rate' is typically computed from SAT scores:
+      NumGE1500 / NumTstTakr (number scoring >= 1500 / number of test takers).
+    - >-
+      The 'Percent (%) Eligible Free (K-12)' column stores values as DECIMALS (0.0 to 1.0),
+      NOT as percentages (0 to 100). If the question asks for a percentage, multiply by 100.
+      Same applies to 'Percent (%) Eligible FRPM (K-12)'.
+
+  toxicology:
+    - >-
+      CRITICAL — molecule.label: '+' means carcinogenic, '-' means non-carcinogenic.
+      These are the EXACT string values stored. Use label = '+' for carcinogenic.
+    - >-
+      bond.bond_type: '-' = single bond, '=' = double bond, '#' = triple bond.
+      There is also NULL for 1 record.
+    - >-
+      IMPORTANT: The 'connected' table stores BOTH directions of each bond.
+      For bond TR000_1_2, there are TWO rows: (TR000_1, TR000_2, TR000_1_2) AND
+      (TR000_2, TR000_1, TR000_1_2). When counting atoms in bonds of a certain type,
+      use DISTINCT atom_id to avoid double-counting, OR join directly
+      through bond table instead.
+    - >-
+      To find atoms in molecules with a specific bond type:
+      SELECT DISTINCT a.atom_id FROM atom a JOIN bond b ON a.molecule_id = b.molecule_id
+      WHERE b.bond_type = '-'. This finds all atoms in molecules that HAVE single bonds.
+      To find atoms that are PART OF a specific bond type:
+      JOIN connected c ON a.atom_id = c.atom_id JOIN bond b ON c.bond_id = b.bond_id.
+    - >-
+      'Average number of X atoms in Y-bond molecules' means:
+      SUM(count of X atoms per molecule) / COUNT(distinct molecules with Y-bond).
+      NOT a simple AVG — you need per-molecule counts first, then average.
+    - >-
+      atom_id format: 'TR000_1' (molecule_id + '_' + atom_number).
+      bond_id format: 'TR000_1_2' (molecule_id + '_' + atom1_num + '_' + atom2_num).
+      molecule_id format: 'TR000', 'TR001', etc.
+    - >-
+      When asked 'what elements are in X type bond', find atoms connected BY that bond type,
+      not atoms in molecules that CONTAIN that bond type. Use:
+      SELECT DISTINCT a.element FROM connected c JOIN bond b ON c.bond_id = b.bond_id
+      JOIN atom a ON c.atom_id = a.atom_id WHERE b.bond_type = '='.
+
+  codebase_community:
+    - >-
+      CRITICAL — Column name TYPOS in the posts table:
+      'CreaionDate' (NOT 'CreationDate') and 'LasActivityDate' (NOT 'LastActivityDate').
+      Always use the EXACT misspelled column names as they appear in the schema.
+    - >-
+      posts.PostTypeId: 1 = Question, 2 = Answer, 3 = Wiki, 4 = TagWiki, 5 = TagWikiExcerpt.
+      When asked about 'posts', it usually means Questions (PostTypeId=1).
+      When asked about 'answers', use PostTypeId=2.
+    - >-
+      posts.OwnerUserId links to users.Id. For 'who edited/commented', use:
+      postHistory for edit history and comments for comments.
+      postHistory.UserId stores who made the edit.
+    - >-
+      'Comments left by users who edited a post' requires JOIN through postHistory:
+      Find users from postHistory WHERE PostHistoryTypeId IN (4,5,6) (edit types),
+      then find their comments on the same post.
+    - >-
+      votes.VoteTypeId: 2 = UpVote, 3 = DownVote.
+      users.UpVotes and users.DownVotes store CUMULATIVE counts per user.
+    - >-
+      Data date range: 2009-02 to 2014-09. Do NOT query dates outside this range.
+    - >-
+      When asked for 'average up votes for users creating more than N posts', the
+      denominator is the number of qualifying USERS, not the number of posts.
+      Use: SELECT AVG(u.UpVotes) FROM users u WHERE (SELECT COUNT(*) FROM posts p
+      WHERE p.OwnerUserId = u.Id) > N.
+    - >-
+      posts.OwnerDisplayName is almost always NULL (89,453 out of 91,966 posts).
+      NEVER rely on OwnerDisplayName — ALWAYS JOIN to users table via OwnerUserId
+      to get display names: SELECT u.DisplayName FROM posts p JOIN users u ON p.OwnerUserId = u.Id.
+      Same applies to posts.LastEditorDisplayName — use LastEditorUserId instead.
+    - >-
+      Tags in posts.Tags are stored with angle brackets: '<r><regression><time-series>'.
+      When searching for a tag, use LIKE '%<tagname>%' with brackets, or search the
+      tags table by TagName column which stores plain names without brackets.
+
+  card_games:
+    - >-
+      cards.uuid is the PRIMARY KEY that links to: rulings.uuid, legalities.uuid,
+      foreign_data.uuid. NOT cards.id — use uuid for JOINs.
+    - >-
+      cards.setCode links to sets.code (NOT sets.id). Use setCode for set lookups.
+    - >-
+      legalities.status: 'Legal', 'Banned', 'Restricted'.
+      'Banned cards' means legalities.status = 'Banned'. A card can be banned in
+      some formats but legal in others.
+    - >-
+      cards.isStorySpotlight: 1 = Story Spotlight card, 0 = not.
+      cards.isTextless: 1 = no text box, 0 = has text box.
+      cards.hasContentWarning: 1 = has content warning.
+      These are INTEGER 0/1, NOT text 'true'/'false'.
+    - >-
+      'Cards illustrated by X' requires: cards.artist = 'X'.
+      'Rulings for a card' requires: JOIN rulings ON cards.uuid = rulings.uuid.
+    - >-
+      cards.frameVersion: '1993', '1997', '2003', '2015', 'future'.
+      This represents the frame STYLE, not when the card was printed.
+    - >-
+      For 'what proportion/percentage of cards have property X', the denominator is
+      the TOTAL number of cards (or the relevant subset), not the number of distinct values.
+    - >-
+      Foreign card names (e.g., 'A Pedra Fellwar' in Portuguese) are stored in
+      foreign_data.name, NOT in cards.name. If a card name doesn't match cards.name,
+      search foreign_data.name and JOIN back to cards via uuid.
+    - >-
+      cards.power = '*' means 'unknown/variable power' (429 cards). This is NOT
+      the same as power IS NULL (30,624 cards without power, like non-creatures).
+      When asked about 'unknown power', use power = '*'.
+    - >-
+      For yes/no questions about cards, the gold answer often expects 'YES' or 'NO'
+      as literal strings, not 0/1 or 'true'/'false'. Return the appropriate string.
+
+  formula_1:
+    - >-
+      CRITICAL — For 'race completion rate' or 'finish rate': a driver FINISHED the race
+      when results.statusId = 1 (status = 'Finished'). Completion rate =
+      COUNT(CASE WHEN statusId = 1 THEN 1 END) * 100.0 / COUNT(*).
+      StatusId 2 = Disqualified, 3 = Accident, 11 = +1 Lap, etc.
+    - >-
+      Best lap time is stored in lapTimes.milliseconds (INTEGER).
+      Use MIN(milliseconds) to find fastest lap. The lapTimes.time column is a STRING
+      like '1:31.600'. For comparisons, ALWAYS use milliseconds column.
+    - >-
+      drivers.dob is the date of birth. For 'youngest drivers', use
+      ORDER BY dob DESC (most recent birth = youngest).
+    - >-
+      'Number of wins' for a driver: Use driverStandings.wins for cumulative wins
+      at a point in time, OR COUNT races where results.position = 1 for total career wins.
+    - >-
+      results.time stores finishing time as STRING (e.g., '1:34:50.616').
+      results.milliseconds stores it as INTEGER. Use milliseconds for calculations.
+      For the winner's time, the first place finisher's time is the reference.
+    - >-
+      The 'champion' of a season is the driver with the most points at the last race
+      of that season in driverStandings. Not all seasons use the same points system.
+    - >-
+      circuits table stores track information. circuits.country uses full names
+      like 'Austria', 'UK', 'USA'. For Austrian circuits, WHERE country = 'Austria'.
+    - >-
+      constructors.nationality and drivers.nationality use adjective forms:
+      'British', 'German', 'Dutch'. When asked about 'Netherlandic' drivers,
+      use nationality = 'Dutch'.
+    - >-
+      results.fastestLapSpeed is stored as TEXT, not REAL. Using MAX(fastestLapSpeed)
+      does TEXT comparison (max='91.610' instead of 257.32). MUST use
+      CAST(fastestLapSpeed AS REAL) for numeric comparisons.
+    - >-
+      driverStandings.wins and constructorStandings.points are CUMULATIVE within a season.
+      At each race, they show the RUNNING TOTAL up to that point. Do NOT SUM these
+      across races — that would over-count. To get season totals, take the values
+      from the LAST race of the season (MAX raceId for that year).

@@ -123,8 +123,8 @@ class SQLRevisor:
     def should_revise(self, result: ExecutionResult) -> bool:
         """Determine if a SQL result should be reviewed.
 
-        Triggers revision for:
-        - Empty results
-        - Suspiciously large results
+        Only triggers for empty results — the most reliable signal.
+        Suspiciously large results are no longer revised since the revisor
+        was found to degrade accuracy on non-empty results in evaluation.
         """
-        return result.is_empty or result.is_suspicious
+        return result.is_empty

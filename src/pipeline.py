@@ -155,7 +155,7 @@ class NL2SQLPipeline:
 
         # Stage 3 components
         self.deduplicator = Deduplicator(timeout=config.sql_timeout)
-        self.tournament_selector = TournamentSelector(self.qwen)
+        self.tournament_selector = TournamentSelector(self.deepseek)  # DeepSeek outperforms Qwen3 for judging
         self.self_consistency = SelfConsistencySelector()
 
     def load_example_index(self, path: str | Path | None = None) -> None:
@@ -308,18 +308,25 @@ class NL2SQLPipeline:
         # Deduplicate by execution results
         deduped = self.deduplicator.deduplicate(refined_candidates, db_path, db_id)
 
+        # Build full (candidate, result) pairs for weighted self-consistency
+        all_pairs = []
+        for candidate in refined_candidates:
+            result = execute_sql(candidate.sql, db_path, db_id, self.config.sql_timeout)
+            if result.success:
+                all_pairs.append((candidate, result))
+
         if len(deduped) == 1:
             selected = deduped[0][0]
             selected_by = "single"
         else:
-            # Hybrid selection: majority vote if dominant group exists, else tournament
+            # Hybrid selection: weighted vote if dominant group, else tournament
             total_candidates = len(refined_candidates)
             top_group_size = deduped[0][0].metadata.get("group_size", 1)
             majority_ratio = top_group_size / total_candidates if total_candidates > 0 else 0
 
             if majority_ratio >= 0.5:
-                # Strong majority — use self-consistency (deterministic)
-                selected = self.self_consistency.select(deduped)
+                # Strong majority — use weighted self-consistency
+                selected = self.self_consistency.select(all_pairs or deduped)
                 selected_by = "self_consistency"
             elif self.config.use_tournament and len(deduped) <= 10:
                 selected = await self.tournament_selector.select(
@@ -327,7 +334,7 @@ class NL2SQLPipeline:
                 )
                 selected_by = "tournament"
             else:
-                selected = self.self_consistency.select(deduped)
+                selected = self.self_consistency.select(all_pairs or deduped)
                 selected_by = "self_consistency"
 
         elapsed = (time.monotonic() - start) * 1000

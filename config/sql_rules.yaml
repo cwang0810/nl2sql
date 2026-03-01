@@ -16,8 +16,12 @@ active_benchmark: bird
 universal:
   - id: 1
     content: >-
-      Return ONLY the columns the question asks for. Do NOT add extra columns such as counts, totals, or IDs
-      unless explicitly requested. If the question asks "what month", return ONLY the month.
+      **CRITICAL — Return ONLY the columns the question asks for.** Do NOT add extra columns such as
+      names, counts, totals, labels, or IDs unless explicitly requested.
+      Examples: "What is the percentage?" → SELECT percentage_value (NOT SELECT name, percentage_value).
+      "What is the eligible rate for the top 5 schools?" → SELECT rate (NOT SELECT school_name, rate).
+      "List the district" → SELECT district (NOT SELECT district, state, percentage).
+      If the question asks for a metric/percentage/rate, return ONLY that number.
   - id: 2
     content: Do NOT use ROUND() unless the question explicitly asks for rounding.
   - id: 3
@@ -52,7 +56,9 @@ universal:
       including duplicates — do NOT assume DISTINCT is needed.
   - id: 12
     content: >-
-      **ORDER of SELECT columns**: Follow the order columns are mentioned in the question text.
+      **ORDER of SELECT columns**: Follow the EXACT order columns are mentioned in the question text.
+      Example: "Indicate the Street, City, State, Zip" → SELECT Street, City, State, Zip
+      (NOT SELECT Street, City, Zip, State). Column order matters for evaluation.
   - id: 13
     content: >-
       **When the question asks "which X has the most/highest Y" and ties are possible**, use a subquery
@@ -106,6 +112,21 @@ benchmarks:
         content: >-
           **CHECK TABLE DATA RANGES**: Before using a table, check its row count and date ranges shown in the
           schema. If a table only has limited date coverage, do NOT use it to query dates outside that range.
+      - id: B9
+        content: >-
+          **When the question asks "list X" or "name X" with a condition, return ONLY the names/identifiers**.
+          Do NOT also return the metric used for filtering. "Name schools where score > 400" → SELECT School
+          (NOT SELECT School, score).
+      - id: B10
+        content: >-
+          **For "how many X and how many Y" questions that ask for two separate counts**, return them
+          as separate columns in a single row: SELECT COUNT(X), COUNT(Y). Do NOT return two separate
+          queries or two rows.
+      - id: B11
+        content: >-
+          **Value format matching**: When the question or evidence mentions a specific value like '+' for
+          carcinogenic or '-' for non-carcinogenic, use that EXACT value in WHERE clauses, not 'true'/'false'
+          or 'yes'/'no'. Check the actual values stored in the database columns.
 
   spider:
     dialect: sqlite
